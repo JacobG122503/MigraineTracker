@@ -11,21 +11,14 @@
         <div class="today-line @(TodayLine is null ? "empty" : "")">@(TodayLine ?? "Nothing logged today")</div>
     </header>
 
-    <div class="mods">
-        <button type="button" class="chip @(_woke ? "on" : "")" aria-pressed="@_woke" @onclick="() => _woke = !_woke">Woke with it</button>
-        <button type="button" class="chip @(_half ? "on" : "")" aria-pressed="@_half" @onclick="() => _half = !_half">+ .5</button>
-    </div>
-
-    <div class="pad" role="group" aria-label="Pain level">
-        @for (int i = 1; i <= 10; i++)
-        {
-            var n = i;
-            <button type="button" class="num @(n == 10 ? "wide" : "") @(n >= 8 ? "dark" : "")" style="--i:@n"
-                    @onclick="() => Rate(n)">
-                @(_half && n < 10 ? $"{n}.5" : n.ToString())
-            </button>
-        }
-    </div>
+    <form class="entry" @onsubmit="Rate">
+        <label class="entry-label" for="pain">Pain level</label>
+        <input id="pain" class="entry-input @(_invalid ? "invalid" : "")" @bind="_value" @bind:event="oninput" @bind:after="() => _invalid = false"
+               inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="0" maxlength="4" />
+        <div class="entry-hint @(_invalid ? "invalid" : "")">@(_invalid ? "Enter a number from 0.5 to 10" : "1–10, halves like 4.5 are fine")</div>
+        <button type="button" class="chip woke @(_woke ? "on" : "")" aria-pressed="@_woke" @onclick="() => _woke = !_woke">Woke with it</button>
+        <button type="submit" class="entry-log" disabled="@string.IsNullOrWhiteSpace(_value)">Log</button>
+    </form>
 
     <div class="extras">
         <button type="button" class="chip" @onclick='() => Med("Ibuprofen")'>Ibuprofen</button>
@@ -55,8 +48,8 @@
 </div>
 
 @code {
-    bool _woke, _half, _noteOpen;
-    string _note = "";
+    bool _woke, _invalid, _noteOpen;
+    string _note = "", _value = "";
     string? _toast;
     string _todayLabel = "";
     DateOnly _today;
@@ -87,12 +80,20 @@
         _todayLabel = $"{Weekdays[(int)now.DayOfWeek]}, {Months[now.Month - 1]} {now.Day}";
     }
 
-    async Task Rate(int n)
+    async Task Rate()
     {
-        double v = _half && n < 10 ? n + 0.5 : n;
+        var text = _value.Trim().Replace(',', '.');
+        if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v)
+            || v <= 0 || v > 10)
+        {
+            _invalid = true;
+            return;
+        }
+        v = Math.Round(v, 1);
         bool woke = _woke;
         await Store.ApplyAsync((t, now) => JournalEditor.AddRating(t, now, v, woke));
-        _woke = _half = false;
+        _value = "";
+        _woke = _invalid = false;
         await Done();
     }
 
