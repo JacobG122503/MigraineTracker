@@ -1,0 +1,68 @@
+@page "/notes"
+@implements IDisposable
+@inject JournalStore Store
+@inject IJSRuntime JS
+
+<PageTitle>Notes · Migraine Tracker</PageTitle>
+
+<div class="notes">
+    <div class="notes-bar">
+        <h1 class="title">Notes</h1>
+        <button type="button" class="chip" @onclick="Copy">@(_copied ? "Copied" : "Copy all")</button>
+    </div>
+    <textarea class="sheet" spellcheck="false" autocapitalize="sentences" aria-label="Migraine journal"
+              value="@_text" @oninput="OnInput" @onblur="Flush"></textarea>
+</div>
+
+@code {
+    string _text = "";
+    bool _copied, _editing;
+    CancellationTokenSource? _save;
+
+    protected override void OnInitialized()
+    {
+        _text = Store.Text;
+        Store.Changed += OnChanged;
+    }
+
+    void OnInput(ChangeEventArgs e)
+    {
+        _text = e.Value?.ToString() ?? "";
+        _editing = true;
+        _save?.Cancel();
+        var cts = _save = new CancellationTokenSource();
+        _ = Task.Delay(700, cts.Token).ContinueWith(t =>
+        {
+            if (!t.IsCanceled) InvokeAsync(Flush);
+        }, TaskScheduler.Default);
+    }
+
+    async Task Flush()
+    {
+        _save?.Cancel();
+        if (!_editing) return;
+        _editing = false;
+        await Store.SetTextAsync(_text);
+    }
+
+    void OnChanged()
+    {
+        // Pick up remote changes (sync) unless the user is mid-edit.
+        if (_editing || _text == Store.Text) return;
+        _text = Store.Text;
+        InvokeAsync(StateHasChanged);
+    }
+
+    async Task Copy()
+    {
+        _copied = await JS.InvokeAsync<bool>("mt.copy", _text);
+        if (_copied) _ = Task.Delay(1500).ContinueWith(_ => { _copied = false; InvokeAsync(StateHasChanged); });
+    }
+
+    public void Dispose()
+    {
+        Store.Changed -= OnChanged;
+        if (_editing) _ = Store.SetTextAsync(_text);
+        _save?.Cancel();
+    }
+}

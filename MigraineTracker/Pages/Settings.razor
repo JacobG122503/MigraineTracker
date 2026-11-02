@@ -1,0 +1,138 @@
+@page "/settings"
+@implements IDisposable
+@inject JournalStore Store
+@inject IJSRuntime JS
+
+<PageTitle>Sync · Migraine Tracker</PageTitle>
+
+<div class="page-pad settings">
+    <h1 class="title">Sync &amp; backup</h1>
+
+    <section class="card">
+        <h2>Cloud sync</h2>
+        @if (Store.IsConnected)
+        {
+            <p class="status">
+                <i class="sync-dot @Store.Sync.ToString().ToLowerInvariant()"></i>
+                @StatusText
+            </p>
+            @if (Store.SyncMessage is not null)
+            {
+                <p class="error">@Store.SyncMessage</p>
+            }
+            <p class="muted">
+                Saved to a secret gist on <strong>@Store.Login</strong>'s GitHub as <code>@GistClient.FileName</code>.
+                <a href="https://gist.github.com/@Store.Login/@Store.GistId" target="_blank" rel="noopener">Open gist</a>
+            </p>
+            <div class="row">
+                <button type="button" class="chip on" disabled="@_busy" @onclick="SyncNow">Sync now</button>
+                <button type="button" class="chip" @onclick="Disconnect">Disconnect</button>
+            </div>
+        }
+        else
+        {
+            <p class="muted">
+                Right now entries are only saved on this device. Paste a GitHub token to back them up to a
+                secret gist automatically. You only do this once.
+            </p>
+            <ol class="steps">
+                <li>Open <a href="https://github.com/settings/tokens/new?scopes=gist&description=Migraine%20Tracker" target="_blank" rel="noopener">GitHub → New token</a> (gist is pre-checked).</li>
+                <li>Set expiration to <em>No expiration</em>, then <em>Generate token</em>.</li>
+                <li>Copy it and paste it here.</li>
+            </ol>
+            <form class="row" @onsubmit="Connect">
+                <input type="password" @bind="_token" placeholder="ghp_…" autocomplete="off" aria-label="GitHub token" />
+                <button type="submit" class="chip on" disabled="@(_busy || string.IsNullOrWhiteSpace(_token))">@(_busy ? "Connecting…" : "Connect")</button>
+            </form>
+            @if (_error is not null)
+            {
+                <p class="error">@_error</p>
+            }
+        }
+    </section>
+
+    <section class="card">
+        <h2>Import / export</h2>
+        <p class="muted">Export saves the journal as a .txt file. Import replaces everything with a .txt file's contents.</p>
+        <div class="row">
+            <button type="button" class="chip" @onclick="Export">Export .txt</button>
+            <label class="chip file">
+                Import .txt
+                <InputFile OnChange="Import" accept=".txt,text/plain" />
+            </label>
+        </div>
+        @if (_importMsg is not null)
+        {
+            <p class="muted">@_importMsg</p>
+        }
+    </section>
+
+    <section class="card">
+        <h2>Journal</h2>
+        <p class="muted">@Summary</p>
+    </section>
+</div>
+
+@code {
+    string _token = "";
+    string? _error, _importMsg;
+    bool _busy;
+
+    string StatusText => Store.Sync switch
+    {
+        SyncState.Synced => "All changes saved to GitHub",
+        SyncState.Syncing => "Syncing…",
+        SyncState.Pending => "Saved on phone, will sync shortly",
+        SyncState.Error => "Not synced yet. Saved on phone; will retry.",
+        _ => "Local only",
+    };
+
+    string Summary
+    {
+        get
+        {
+            var days = Store.Journal.Days;
+            if (days.Count == 0) return "No entries yet.";
+            var total = days.Select(d => d.Date).Distinct().Count();
+            var mig = days.Where(d => d.Kind == DayKind.Migraine).Select(d => d.Date).Distinct().Count();
+            return $"{total} days logged ({days[^1].Date:M/d/yy} – {days[0].Date:M/d/yy}), {mig} with a migraine.";
+        }
+    }
+
+    protected override void OnInitialized() => Store.Changed += OnChanged;
+
+    async Task Connect()
+    {
+        _busy = true; _error = null;
+        try { await Store.ConnectAsync(_token); _token = ""; }
+        catch (GistException e) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+
+    async Task SyncNow()
+    {
+        _busy = true;
+        try { await Store.SyncNowAsync(); } finally { _busy = false; }
+    }
+
+    async Task Disconnect() => await Store.DisconnectAsync();
+
+    async Task Export() => await JS.InvokeVoidAsync("mt.download", GistClient.FileName, Store.Text);
+
+    async Task Import(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            using var stream = e.File.OpenReadStream(maxAllowedSize: 5_000_000);
+            using var reader = new StreamReader(stream);
+            var text = await reader.ReadToEndAsync();
+            await Store.SetTextAsync(text);
+            _importMsg = $"Imported {e.File.Name}: {Store.Journal.Days.Count} days.";
+        }
+        catch (Exception ex) { _importMsg = $"Import failed: {ex.Message}"; }
+    }
+
+    void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Store.Changed -= OnChanged;
+}

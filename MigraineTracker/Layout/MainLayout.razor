@@ -1,0 +1,49 @@
+﻿@inherits LayoutComponentBase
+@implements IDisposable
+@inject JournalStore Store
+
+<div class="shell">
+    <main class="screen">
+        @if (_ready)
+        {
+            @Body
+        }
+    </main>
+
+    <nav class="tabbar" aria-label="Main">
+        <NavLink href="" Match="NavLinkMatch.All" class="tab">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></svg>
+            <span>Log</span>
+        </NavLink>
+        <NavLink href="graph" class="tab">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V12M10 20V6M15 20v-9M20 20V9" /></svg>
+            <span>Graph</span>
+        </NavLink>
+        <NavLink href="notes" class="tab">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2.5" /><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4" /></svg>
+            <span>Notes</span>
+        </NavLink>
+        <NavLink href="settings" class="tab">
+            <span class="tab-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.6 9.1 4.2 4.2 0 0 0 7 17.5Z" /></svg>
+                <i class="sync-dot @Store.Sync.ToString().ToLowerInvariant()"></i>
+            </span>
+            <span>Sync</span>
+        </NavLink>
+    </nav>
+</div>
+
+@code {
+    bool _ready;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Store.Changed += OnChanged;
+        await Store.InitializeAsync();
+        _ready = true;
+    }
+
+    void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Store.Changed -= OnChanged;
+}

@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+.DS_Store
+
+# Personal health data - lives in your private gist, never in this public repo
+migrainedata.txt
+migraine-journal.txt
+*.txt

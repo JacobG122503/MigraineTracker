@@ -1,0 +1,61 @@
+@page "/graph"
+@implements IAsyncDisposable
+@inject JournalStore Store
+@inject IJSRuntime JS
+
+<PageTitle>Graph · Migraine Tracker</PageTitle>
+
+<div class="page-pad">
+    <h1 class="title">History</h1>
+    <div class="viz-root" @ref="_root"></div>
+</div>
+
+@code {
+    ElementReference _root;
+    IJSObjectReference? _module, _chart;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/chart.js");
+        _chart = await _module.InvokeAsync<IJSObjectReference>("mount", _root, Payload());
+        Store.Changed += OnChanged;
+    }
+
+    object Payload()
+    {
+        var epoch = DateOnly.FromDayNumber(719162); // 1970-01-01
+        return new
+        {
+            days = Store.Journal.Days.Select(d => new
+            {
+                d = d.Date.DayNumber - epoch.DayNumber,
+                v = d.Peak,
+                k = d.Kind.ToString(),
+                t = d.Line.Trim(),
+                meds = d.Meds,
+            }).ToArray(),
+            markers = Store.Journal.Markers.Where(m => m.IsEmgality).Select(m => new
+            {
+                d = m.After.DayNumber - epoch.DayNumber,
+                label = m.Label,
+            }).ToArray(),
+        };
+    }
+
+    void OnChanged() => InvokeAsync(async () =>
+    {
+        if (_chart is not null) await _chart.InvokeVoidAsync("update", Payload());
+    });
+
+    public async ValueTask DisposeAsync()
+    {
+        Store.Changed -= OnChanged;
+        try
+        {
+            if (_chart is not null) { await _chart.InvokeVoidAsync("dispose"); await _chart.DisposeAsync(); }
+            if (_module is not null) await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+    }
+}

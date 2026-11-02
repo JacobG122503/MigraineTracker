@@ -1,0 +1,155 @@
+﻿@page "/"
+@implements IDisposable
+@inject JournalStore Store
+@inject IJSRuntime JS
+
+<PageTitle>Migraine Tracker</PageTitle>
+
+<div class="home">
+    <header class="today">
+        <div class="today-date">@_todayLabel</div>
+        <div class="today-line @(TodayLine is null ? "empty" : "")">@(TodayLine ?? "Nothing logged today")</div>
+    </header>
+
+    <div class="mods">
+        <button type="button" class="chip @(_woke ? "on" : "")" aria-pressed="@_woke" @onclick="() => _woke = !_woke">Woke with it</button>
+        <button type="button" class="chip @(_half ? "on" : "")" aria-pressed="@_half" @onclick="() => _half = !_half">+ .5</button>
+    </div>
+
+    <div class="pad" role="group" aria-label="Pain level">
+        @for (int i = 1; i <= 10; i++)
+        {
+            var n = i;
+            <button type="button" class="num @(n == 10 ? "wide" : "") @(n >= 8 ? "dark" : "")" style="--i:@n"
+                    @onclick="() => Rate(n)">
+                @(_half && n < 10 ? $"{n}.5" : n.ToString())
+            </button>
+        }
+    </div>
+
+    <div class="extras">
+        <button type="button" class="chip" @onclick='() => Med("Ibuprofen")'>Ibuprofen</button>
+        <button type="button" class="chip" @onclick='() => Med("Tylenol")'>Tylenol</button>
+        <button type="button" class="chip" @onclick="Emgality">Emgality</button>
+        <button type="button" class="chip" @onclick="() => _noteOpen = !_noteOpen">Note</button>
+    </div>
+
+    @if (_noteOpen)
+    {
+        <form class="note-row" @onsubmit="AddNote">
+            <input @bind="_note" placeholder="e.g. Drank last night" aria-label="Note for today" autofocus />
+            <button type="submit" class="chip on">Add</button>
+        </form>
+    }
+
+    @if (_toast is not null)
+    {
+        <div class="toast" role="status">
+            <span>@_toast</span>
+            @if (Store.CanUndo)
+            {
+                <button type="button" @onclick="Undo">Undo</button>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    bool _woke, _half, _noteOpen;
+    string _note = "";
+    string? _toast;
+    string _todayLabel = "";
+    DateOnly _today;
+    CancellationTokenSource? _toastTimer;
+
+    static readonly string[] Weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    static readonly string[] Months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+    string? TodayLine
+    {
+        get
+        {
+            var top = Store.Journal.Days.FirstOrDefault();
+            return top is not null && top.Date == _today && top.Content.Length > 0 ? top.Line.Trim() : null;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Store.Changed += OnChanged;
+        await RefreshToday();
+    }
+
+    async Task RefreshToday()
+    {
+        var now = await Store.NowAsync();
+        _today = DateOnly.FromDateTime(now);
+        _todayLabel = $"{Weekdays[(int)now.DayOfWeek]}, {Months[now.Month - 1]} {now.Day}";
+    }
+
+    async Task Rate(int n)
+    {
+        double v = _half && n < 10 ? n + 0.5 : n;
+        bool woke = _woke;
+        await Store.ApplyAsync((t, now) => JournalEditor.AddRating(t, now, v, woke));
+        _woke = _half = false;
+        await Done();
+    }
+
+    async Task Med(string name)
+    {
+        await Store.ApplyAsync((t, now) => JournalEditor.AddMed(t, now, name));
+        await Done();
+    }
+
+    async Task Emgality()
+    {
+        await Store.ApplyAsync(JournalEditor.AddEmgality);
+        var n = JournalParser.LastEmgalityNumber(Store.Journal);
+        await Done($"Added (Emgality {n})");
+    }
+
+    async Task AddNote()
+    {
+        var note = _note;
+        await Store.ApplyAsync((t, now) => JournalEditor.AddNote(t, now, note));
+        _note = "";
+        _noteOpen = false;
+        await Done();
+    }
+
+    async Task Undo()
+    {
+        await Store.UndoAsync();
+        _toast = "Undone";
+        StartToastTimer();
+    }
+
+    async Task Done(string? message = null)
+    {
+        await RefreshToday();
+        await JS.InvokeVoidAsync("mt.vibrate");
+        _toast = message ?? $"Saved: {TodayLine}";
+        StartToastTimer();
+    }
+
+    void StartToastTimer()
+    {
+        _toastTimer?.Cancel();
+        var cts = _toastTimer = new CancellationTokenSource();
+        _ = Task.Delay(5000, cts.Token).ContinueWith(t =>
+        {
+            if (t.IsCanceled) return;
+            _toast = null;
+            InvokeAsync(StateHasChanged);
+        }, TaskScheduler.Default);
+    }
+
+    void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Store.Changed -= OnChanged;
+        _toastTimer?.Cancel();
+    }
+}
