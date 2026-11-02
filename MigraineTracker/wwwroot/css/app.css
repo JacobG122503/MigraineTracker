@@ -264,8 +264,8 @@ h1:focus { outline: none; }
 code { font-size: 14px; }
 
 /* ---------- Chart ---------- */
-.viz-ranges { display: flex; gap: 4px; background: var(--surface-2); border-radius: 10px; padding: 3px; max-width: 520px; }
-.viz-ranges button { flex: 1; border: 0; background: none; border-radius: 8px; padding: 6px 0; font-size: 14px; font-weight: 600; color: var(--text-2); }
+.viz-ranges { display: flex; gap: 2px; background: var(--surface-2); border-radius: 10px; padding: 3px; max-width: 600px; }
+.viz-ranges button { flex: 1; min-width: 0; border: 0; background: none; border-radius: 8px; padding: 7px 0; font-size: 13px; font-weight: 600; color: var(--text-2); }
 .viz-ranges button.active { background: var(--series-1); color: #fff; }
 .viz-span { margin: 12px 0 10px; font-size: 14px; color: var(--text-2); }
 .viz-card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 12px 10px 8px; }
