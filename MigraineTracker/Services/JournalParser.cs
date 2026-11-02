@@ -18,7 +18,7 @@ public sealed record DayEntry(
     DayKind Kind);
 
 /// <summary>A parenthesised line between days, e.g. "(Emgality 29)". It sits after <see cref="After"/>.</summary>
-public sealed record Marker(DateOnly After, int LineIndex, string Label, bool IsEmgality);
+public sealed record Marker(DateOnly After, int LineIndex, string Label, bool IsEmgality, bool IsShot);
 
 public sealed record Journal(
     string[] Lines,
@@ -33,7 +33,8 @@ public sealed record Journal(
 public static partial class JournalParser
 {
     const string Time = @"(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|\d{1,2}:\d{2})";
-    const string MedNames = "ibuprofen|tylenol|excedrin|advil|aleve|motrin|naproxen|sumatriptan|rizatriptan|maxalt|imitrex|nurtec|ubrelvy";
+    const string MedNames = "ibuprofen|tylenol|excedrin|advil|aleve|motrin|naproxen|sumatriptan|rizatriptan|eletriptan|naratriptan|zolmitriptan|"
+        + "maxalt|imitrex|nurtec|ubrelvy|prochlorperazine|reyvow|zavzpret|mint|cbd";
 
     [GeneratedRegex(@"^\s*(\d{1,2})/(\d{1,2})(?![\d/])\s*-?\s*(.*?)\s*$")]
     private static partial Regex DateLineRx();
@@ -61,6 +62,9 @@ public static partial class JournalParser
 
     [GeneratedRegex(@"\d+")]
     private static partial Regex DigitsRx();
+
+    [GeneratedRegex(@"^(ajovy|aimovig)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex ShotRx();
 
     public static Journal Parse(string text, DateOnly today)
     {
@@ -128,7 +132,10 @@ public static partial class JournalParser
             var below = days.FirstOrDefault(d => d.LineIndex > li);
             if (below is null) continue;
             var label = lines[li].Trim().Trim('(', ')').Trim();
-            markers.Add(new Marker(below.Date, li, label, label.Contains("emgality", StringComparison.OrdinalIgnoreCase)));
+            bool emgality = label.Contains("emgality", StringComparison.OrdinalIgnoreCase);
+            // Monthly preventive shots (CGRP): drawn on the chart and used for the shot-cycle stat.
+            bool shot = emgality || ShotRx().IsMatch(label);
+            markers.Add(new Marker(below.Date, li, label, emgality, shot));
         }
 
         return new Journal(lines, days, markers, insertIndex);

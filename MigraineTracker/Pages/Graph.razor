@@ -37,7 +37,7 @@
                 w = d.Woke,
                 hr = d.StartHour,
             }).ToArray(),
-            markers = Store.Journal.Markers.Where(m => m.IsEmgality).Select(m => new
+            markers = Store.Journal.Markers.Where(m => m.IsShot).Select(m => new
             {
                 d = m.After.DayNumber - epoch.DayNumber,
                 label = m.Label,

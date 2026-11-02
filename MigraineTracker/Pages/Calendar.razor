@@ -1,0 +1,201 @@
+@page "/calendar"
+@implements IDisposable
+@inject JournalStore Store
+
+<PageTitle>Calendar · Migraine Tracker</PageTitle>
+
+<div class="page-pad cal">
+    <h1 class="title">Calendar</h1>
+
+    <div class="cal-legend" aria-hidden="true">
+        <span class="cal-ramp">
+            <span>1</span>
+            @for (int v = 1; v <= 10; v++)
+            {
+                <i class="cal-swatch" style="--p:@Heat(v)"></i>
+            }
+            <span>10</span>
+        </span>
+        <span><i class="cal-swatch none"></i>No migraine</span>
+        <span><i class="cal-swatch sick"></i>Sick</span>
+        <span><i class="cal-swatch empty"></i>Not logged</span>
+    </div>
+
+    <div class="cal-head" aria-hidden="true">
+        <span></span>
+        @foreach (var d in DayLetters)
+        {
+            <span>@d</span>
+        }
+    </div>
+
+    <div class="cal-grid" role="grid" aria-label="Pain by day, newest first">
+        @foreach (var week in _weeks)
+        {
+            <div class="cal-row" role="row">
+                <span class="cal-gutter">@week.Label</span>
+                @for (int i = 0; i < 7; i++)
+                {
+                    var day = week.Start.AddDays(i);
+                    if (day > _today)
+                    {
+                        <span class="cal-cell future"></span>
+                        continue;
+                    }
+                    _byDate.TryGetValue(day, out var info);
+                    <button type="button" role="gridcell"
+                            class="cal-cell @CellClass(info) @(info?.Peak >= 6 ? "hot" : "") @(day == _today ? "today" : "") @(day == _selected ? "selected" : "") @(day.Day == 1 ? "first" : "")"
+                            style="@(info?.Peak is double p ? $"--p:{Heat(p)}" : null)"
+                            aria-label="@AriaLabel(day, info)"
+                            @onclick="() => Select(day)">
+                        <span class="cal-num">@day.Day</span>
+                    </button>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@if (_selected is DateOnly sel)
+{
+    var info = _byDate.GetValueOrDefault(sel);
+    <div class="sheet-backdrop" @onclick="() => _selected = null"></div>
+    <section class="day-sheet" role="dialog" aria-label="@LongDate(sel)">
+        <div class="day-sheet-top">
+            <button type="button" class="sheet-nav" aria-label="Previous day" disabled="@(sel <= _oldest)" @onclick="() => Select(sel.AddDays(-1))">‹</button>
+            <div class="day-sheet-date">@LongDate(sel)</div>
+            <button type="button" class="sheet-nav" aria-label="Next day" disabled="@(sel >= _today)" @onclick="() => Select(sel.AddDays(1))">›</button>
+        </div>
+        <div class="day-sheet-main">
+            <span class="day-pain @CellClass(info) @(info?.Peak >= 6 ? "hot" : "")" style="@(info?.Peak is double p ? $"--p:{Heat(p)}" : null)">
+                @(info?.Peak is double pk ? JournalEditor.FormatValue(pk) : info?.Kind == DayKind.Sick ? "Sick" : info is null ? "–" : "0")
+            </span>
+            <div class="day-facts">
+                <div class="day-fact-title">@Headline(info)</div>
+                @if (info is not null)
+                {
+                    <div class="day-fact-sub">@Facts(info)</div>
+                }
+            </div>
+        </div>
+        @if (info is not null)
+        {
+            @foreach (var line in info.Lines)
+            {
+                <p class="day-line">@line</p>
+            }
+        }
+        else
+        {
+            <p class="day-line muted">Nothing in the journal for this day.</p>
+        }
+    </section>
+}
+
+@code {
+    sealed record DayInfo(double? Peak, double? Start, DayKind Kind, bool Woke, double? StartHour, int Meds, List<string> Lines);
+    sealed record Week(DateOnly Start, string? Label);
+
+    static readonly string[] DayLetters = ["S", "M", "T", "W", "T", "F", "S"];
+    static readonly string[] Months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    static readonly string[] Weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+    Dictionary<DateOnly, DayInfo> _byDate = new();
+    List<Week> _weeks = new();
+    DateOnly _today, _oldest;
+    DateOnly? _selected;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _today = DateOnly.FromDateTime(await Store.NowAsync());
+        Build();
+        Store.Changed += OnChanged;
+    }
+
+    void Build()
+    {
+        _byDate = new();
+        foreach (var d in Store.Journal.Days)
+        {
+            if (_byDate.TryGetValue(d.Date, out var cur))
+            {
+                // Same date written twice: merge.
+                _byDate[d.Date] = cur with
+                {
+                    Peak = Max(cur.Peak, d.Peak),
+                    Kind = cur.Kind == DayKind.Migraine || d.Kind == DayKind.Migraine ? DayKind.Migraine : cur.Kind,
+                    Woke = cur.Woke || d.Woke,
+                    Meds = cur.Meds + d.Meds,
+                    Lines = [.. cur.Lines, d.Line.Trim()],
+                };
+            }
+            else _byDate[d.Date] = new DayInfo(d.Peak, d.Start, d.Kind, d.Woke, d.StartHour, d.Meds, [d.Line.Trim()]);
+        }
+
+        _oldest = _byDate.Count > 0 ? _byDate.Keys.Min() : _today;
+        _weeks = new();
+        var start = _today.AddDays(-(int)_today.DayOfWeek);                 // Sunday of this week
+        var end = _oldest.AddDays(-(int)_oldest.DayOfWeek);
+        for (var w = start; w >= end; w = w.AddDays(-7))
+        {
+            // Label the week where a month begins (and the very first row).
+            string? label = null;
+            for (int i = 0; i < 7; i++)
+            {
+                var d = w.AddDays(i);
+                if (d.Day == 1 && d <= _today)
+                    label = d.Month == 1 ? $"Jan '{d.Year % 100:00}" : Months[d.Month - 1];
+            }
+            if (w == start) label ??= Months[_today.Month - 1];
+            _weeks.Add(new Week(w, label));
+        }
+    }
+
+    static double? Max(double? a, double? b) => a is null ? b : b is null ? a : Math.Max(a.Value, b.Value);
+
+    // Percentage along the 1→10 ramp.
+    static string Heat(double v) => Math.Round(Math.Clamp((v - 1) / 9, 0, 1) * 100).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    static string CellClass(DayInfo? info) => info switch
+    {
+        null => "empty",
+        { Peak: not null } => "pain",
+        { Kind: DayKind.Sick } => "sick",
+        _ => "none",
+    };
+
+    void Select(DateOnly d) => _selected = d < _oldest || d > _today ? _selected : d;
+
+    static string LongDate(DateOnly d) => $"{Weekdays[(int)d.DayOfWeek]}, {Months[d.Month - 1]} {d.Day}, {d.Year}";
+
+    static string AriaLabel(DateOnly d, DayInfo? info) =>
+        $"{LongDate(d)}: " + (info?.Peak is double p ? $"pain {JournalEditor.FormatValue(p)}"
+            : info?.Kind == DayKind.Sick ? "sick" : info is null ? "not logged" : "no migraine");
+
+    static string Headline(DayInfo? info) => info switch
+    {
+        null => "Not logged",
+        { Peak: double p } when info.Start is double s && s < p => $"Started at {JournalEditor.FormatValue(s)}, peaked at {JournalEditor.FormatValue(p)}",
+        { Peak: double p } => $"Pain {JournalEditor.FormatValue(p)}",
+        { Kind: DayKind.Sick } => "Sick",
+        { Kind: DayKind.Other } => "No pain level",
+        _ => "No migraine",
+    };
+
+    static string Facts(DayInfo info)
+    {
+        var parts = new List<string>();
+        if (info.Woke) parts.Add("Woke with it");
+        else if (info.StartHour is double h)
+        {
+            int hr = (int)h, min = (int)Math.Round((h - hr) * 60);
+            parts.Add("Started " + JournalEditor.FormatTime(new DateTime(2000, 1, 1, hr % 24, min % 60, 0)));
+        }
+        if (info.Meds > 0) parts.Add(info.Meds == 1 ? "1 pill" : $"{info.Meds} pills");
+        return string.Join(" · ", parts);
+    }
+
+    void OnChanged() => InvokeAsync(() => { Build(); StateHasChanged(); });
+
+    public void Dispose() => Store.Changed -= OnChanged;
+}

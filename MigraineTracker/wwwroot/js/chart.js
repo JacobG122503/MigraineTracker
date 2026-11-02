@@ -131,7 +131,7 @@ export function mount(root, payload) {
     const legend = h('div', { class: 'viz-legend' }, card);
     const key = (cls, label) => { const s = h('span', {}, legend); h('i', { class: cls }, s); s.append(label); };
     key('key-line', 'Trend'); key('key-dot', 'Migraine day'); key('key-dash', 'Range average');
-    key('key-good', 'Better than 2-month trend'); key('key-bad', 'Worse'); key('key-shot', 'Emgality');
+    key('key-good', 'Better than 2-month trend'); key('key-bad', 'Worse'); key('key-shot', 'Preventive shot');
     const plot = h('div', { class: 'viz-plot' }, card);
     const svg = h('svg:svg', { class: 'viz-svg', role: 'img', 'aria-label': 'Migraine pain trend chart' }, plot);
     const tip = h('div', { class: 'viz-tip', hidden: '' }, plot);
@@ -226,18 +226,20 @@ export function mount(root, payload) {
 
         // Month columns + header (year row, month row), like Happy Scale.
         const head = h('svg:g', { class: 'viz-head' }, svg);
-        let lastYearX = -Infinity;
+        const years = [];
         for (let ms = monthStart(lo); ms <= hi; ms = nextMonth(ms)) {
             const me = nextMonth(ms), t = utc(ms), m = t.getUTCMonth();
             const xs = sx(ms), a = Math.max(xs, M.left), b = Math.min(sx(me), W - M.right);
-            if (xs >= M.left) h('svg:line', { x1: xs, x2: xs, y1: M.top - 14, y2: y0, class: 'month' }, grid);
+            const monthPx = 30.4 * p;
+            if (xs >= M.left && (monthPx >= 10 || m === 0 || (monthPx >= 5 && m % 3 === 0)))
+                h('svg:line', { x1: xs, x2: xs, y1: M.top - 14, y2: y0, class: m === 0 ? 'month year' : 'month' }, grid);
             const w = b - a;
             if (w >= 9) h('svg:text', { x: (a + b) / 2, y: M.top - 20, 'text-anchor': 'middle' }, head, w >= 34 ? MONTHS[m] : LETTERS[m]);
-            if (m === 0 || ms === monthStart(lo)) {
-                const yx = Math.max(xs, M.left) + 2;
-                if (yx - lastYearX > 44 && yx < W - 40) { h('svg:text', { x: yx, y: 14, class: 'year' }, head, t.getUTCFullYear()); lastYearX = yx; }
-            }
+            if (m === 0 || ms === monthStart(lo)) years.push([Math.max(xs, M.left) + 2, t.getUTCFullYear()]);
         }
+        if (years.length > 1 && years[1][0] - years[0][0] < 46) years.shift();
+        for (const [yx, label] of years) if (yx < W - 34) h('svg:text', { x: yx, y: 14, class: 'year' }, head, label);
+
         // Day numbers when zoomed in far enough.
         if (p >= 9) {
             const step = [1, 2, 3, 5, 7].find(s => s * p >= 22) ?? 7;
@@ -268,21 +270,23 @@ export function mount(root, payload) {
         for (const sh of data.shots) {
             const x = sx(sh.d);
             if (x < M.left || x > W - M.right) continue;
-            h('svg:line', { x1: x, x2: x, y1: yTop, y2: y0, class: 'viz-shot' }, g);
-            if (x - lastShotX < 30) continue;
+            const roomy = p >= 1.2;
+            h('svg:line', { x1: x, x2: x, y1: roomy ? yTop : y0 - 7, y2: y0, class: roomy ? 'viz-shot' : 'viz-shot tick' }, g);
+            if (!roomy || x - lastShotX < 30) continue;
             const n = (sh.label.match(/\d+(\.\d+)?/g) ?? []).map(Number);
+            const prefix = /^aimovig/i.test(sh.label) ? 'Am' : /^ajovy/i.test(sh.label) ? 'A' : 'E';
             const right = x > W - M.right - 30;
-            h('svg:text', { x: right ? x - 3 : x + 3, y: y0 - 4, 'text-anchor': right ? 'end' : 'start', class: 'viz-shot-label' }, g, n.length ? `E${Math.floor(Math.max(...n))}` : 'E');
+            h('svg:text', { x: right ? x - 3 : x + 3, y: y0 - 4, 'text-anchor': right ? 'end' : 'start', class: 'viz-shot-label' }, g, n.length ? `${prefix}${Math.floor(Math.max(...n))}` : prefix);
             lastShotX = x;
         }
 
         // Stems + dots for migraine days
-        const big = p >= 3;
+        const big = p >= 3, showDots = p >= 0.8;
         const r = p >= 10 ? 4.5 : p >= 5 ? 3.5 : big ? 2.5 : 1.6;
         for (let d = lo; d <= hi; d++) {
             const i = d - data.first, v = data.v[i];
             const x = sx(d + 0.5);
-            if (v > 0) {
+            if (v > 0 && showDots) {
                 if (big) h('svg:line', { x1: x, x2: x, y1: sy(v), y2: sy(data.f[i]), class: 'viz-stem' }, g);
                 h('svg:circle', { cx: x, cy: sy(v), r: d === tipDay ? r + 1.5 : r, class: big ? 'viz-dot ring' : 'viz-dot' }, g);
             } else if (big && data.byDay.get(d)?.k === 'Sick') {
@@ -398,7 +402,7 @@ export function mount(root, payload) {
             label, value: c, n: todTotal, c,
         })), r => pct(r.c, r.n));
 
-        bars('Emgality cycle', 'Migraine days by week since the last shot', s.cycle.map((c, i) => ({
+        bars('Shot cycle', 'Migraine days by week since the last Emgality / Ajovy / Aimovig shot', s.cycle.map((c, i) => ({
             label: i < 3 ? `Week ${i + 1}` : 'Week 4+', value: c.n ? c.mig / c.n : 0, n: c.n, c,
         })), r => `${pct(r.c.mig, r.c.n)} · ${fmt(r.c.sum / r.c.n)}`);
 
