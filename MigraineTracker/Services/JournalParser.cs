@@ -13,6 +13,7 @@ public sealed record DayEntry(
     double? Start,
     double? Peak,
     bool Woke,
+    double? StartHour,   // 0-24, when the first time on the line says it started
     int Meds,
     DayKind Kind);
 
@@ -138,6 +139,8 @@ public static partial class JournalParser
         var s = ParensRx().Replace(content, " ");
         int meds = MedRx().Matches(s).Count;
         s = MedRx().Replace(s, " ");
+        var firstTime = TimeRx().Match(s);
+        double? startHour = firstTime.Success ? ToHour(firstTime.Value) : null;
         s = TimeRx().Replace(s, " ");
 
         var values = new List<double>();
@@ -160,8 +163,26 @@ public static partial class JournalParser
             : string.IsNullOrWhiteSpace(content) ? DayKind.None
             : DayKind.Other;
 
-        return new DayEntry(date, index, line, content, start ?? peak, peak, WokeRx().IsMatch(content), meds, kind);
+        return new DayEntry(date, index, line, content, start ?? peak, peak, WokeRx().IsMatch(content), startHour, meds, kind);
     }
+
+    /// <summary>"9am" → 9, "1:30pm" → 13.5. Without am/pm, 7-11 is morning and 12-6 afternoon.</summary>
+    static double? ToHour(string t)
+    {
+        var m = HourRx().Match(t);
+        if (!m.Success) return null;
+        int h = int.Parse(m.Groups[1].Value);
+        int min = m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 0;
+        if (h is < 1 or > 12 || min > 59) return null;
+        var suffix = m.Groups[3].Value.ToLowerInvariant();
+        bool pm = suffix.StartsWith('p') || (suffix.Length == 0 && h <= 6);
+        h %= 12;
+        if (pm) h += 12;
+        return h + min / 60.0;
+    }
+
+    [GeneratedRegex(@"(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?", RegexOptions.IgnoreCase)]
+    private static partial Regex HourRx();
 
     /// <summary>Highest Emgality number in the newest Emgality marker, e.g. "Emgality 9 + 10" → 10.</summary>
     public static int? LastEmgalityNumber(Journal j)

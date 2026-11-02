@@ -34,6 +34,8 @@
                 k = d.Kind.ToString(),
                 t = d.Line.Trim(),
                 meds = d.Meds,
+                w = d.Woke,
+                hr = d.StartHour,
             }).ToArray(),
             markers = Store.Journal.Markers.Where(m => m.IsEmgality).Select(m => new
             {
