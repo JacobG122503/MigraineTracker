@@ -1,8 +1,8 @@
-// Migraine history, Happy Scale style:
-//  - a smooth trend line of daily pain (pain-free days count as 0)
-//  - a dot per migraine day, with a stem to the trend
-//  - a band between the trend and a slower 30-day trend: green = improving, red = worsening
-//  - a dashed line at the average for the visible range
+// Migraine history in two panels that share one time axis:
+//  1. Pain on migraine days: a dot per migraine day, a smooth trend of pain on migraine days only
+//     (pain-free days don't drag it down), a band vs the slower 2-month trend (green better, red worse)
+//     and a dashed line at the range's average pain on migraine days.
+//  2. How often: migraine days per week (zoomed in) or month, stacked mild / moderate / severe.
 // Below the chart: stats, patterns and a month table for the same range.
 // Pinch / drag (touch) or wheel / drag (mouse) to zoom and pan; tap or hover for details.
 
@@ -16,6 +16,7 @@ const MIN_SPAN = 7;
 const FAST = 4;      // trend: Gaussian smoothing, sigma in days
 const SLOW = 20;     // comparison trend (~2 months wide)
 const SEVERE = 6;
+const MODERATE = 4;
 
 const utc = d => new Date(d * DAY);
 const short = d => { const t = utc(d); return `${t.getUTCMonth() + 1}/${t.getUTCDate()}`; };
@@ -36,18 +37,19 @@ function h(tag, attrs = {}, parent, text) {
     return e;
 }
 
-// Centred Gaussian moving average; near the ends it uses whatever neighbours exist.
-function smooth(src, out, sigma) {
+// Centred Gaussian average of pain over migraine days only. Where there are too few migraine days
+// nearby to say anything, the result is NaN and the line breaks.
+function smoothSeverity(src, out, sigma) {
     const r = Math.ceil(sigma * 3), w = [];
     for (let k = -r; k <= r; k++) w.push(Math.exp(-(k * k) / (2 * sigma * sigma)));
     for (let i = 0; i < src.length; i++) {
         let sum = 0, wsum = 0;
         for (let k = -r; k <= r; k++) {
             const j = i + k;
-            if (j < 0 || j >= src.length) continue;
+            if (j < 0 || j >= src.length || !(src[j] > 0)) continue;
             sum += src[j] * w[k + r]; wsum += w[k + r];
         }
-        out[i] = sum / wsum;
+        out[i] = wsum >= 0.5 ? sum / wsum : NaN;
     }
 }
 
@@ -68,8 +70,8 @@ function prepare(payload) {
     const n = end - first;
     const v = new Float64Array(n), f = new Float64Array(n), s = new Float64Array(n);
     for (let i = 0; i < n; i++) v[i] = byDay.get(first + i)?.v ?? 0;
-    smooth(v, f, FAST);
-    smooth(v, s, SLOW);
+    smoothSeverity(v, f, FAST);
+    smoothSeverity(v, s, SLOW);
     const shots = payload.markers.map(m => ({ d: m.d + 1, label: m.label })).sort((x, y) => x.d - y.d);
     return { byDay, first, end, v, f, s, shots };
 }
@@ -128,10 +130,31 @@ export function mount(root, payload) {
     const span = h('div', { class: 'viz-span' }, root);
 
     const card = h('div', { class: 'viz-card' }, root);
+    const modes = h('div', { class: 'viz-mode', role: 'group', 'aria-label': 'Chart style' }, card);
+    let mode = 'trend';
+    try { mode = localStorage.getItem('mt.chartMode') === 'scatter' ? 'scatter' : 'trend'; } catch { }
+    const modeBtns = [['trend', 'Trend'], ['scatter', 'Scatter']].map(([m, label]) => {
+        const b = h('button', { type: 'button', 'data-mode': m }, modes, label);
+        b.addEventListener('click', () => {
+            mode = m;
+            try { localStorage.setItem('mt.chartMode', m); } catch { }
+            schedule();
+        });
+        return b;
+    });
     const legend = h('div', { class: 'viz-legend' }, card);
     const key = (cls, label) => { const s = h('span', {}, legend); h('i', { class: cls }, s); s.append(label); };
-    key('key-line', 'Trend'); key('key-dot', 'Migraine day'); key('key-dash', 'Range average');
-    key('key-good', 'Better than 2-month trend'); key('key-bad', 'Worse'); key('key-shot', 'Preventive shot');
+    function renderLegend() {
+        legend.replaceChildren();
+        if (mode === 'trend') {
+            key('key-line', 'Pain trend'); key('key-dot', 'Migraine day'); key('key-dash', 'Range average');
+            key('key-good', 'Better than 2-month trend'); key('key-bad', 'Worse');
+        } else {
+            key('key-dotline', 'Migraine day'); key('key-dash', 'Range average');
+        }
+        key('key-shot', 'Preventive shot');
+        key('key-mild', 'Mild (<4)'); key('key-mod', 'Moderate (4–5.5)'); key('key-sev', 'Severe (6+)');
+    }
     const plot = h('div', { class: 'viz-plot' }, card);
     const svg = h('svg:svg', { class: 'viz-svg', role: 'img', 'aria-label': 'Migraine pain trend chart' }, plot);
     const tip = h('div', { class: 'viz-tip', hidden: '' }, plot);
@@ -156,8 +179,9 @@ export function mount(root, payload) {
     const plotW = () => W - M.left - M.right;
     const ppd = () => plotW() / (x1 - x0);
     const sx = d => M.left + (d - x0) * ppd();
-    let yMax = 10;
-    const sy = v => M.top + (1 - v / yMax) * (H - M.top - M.bottom);
+    // Panel geometry, set in render(): severity panel [sevTop, sevBot], frequency panel [frqTop, frqBot].
+    let yMax = 10, sevTop = 0, sevBot = 0, frqTop = 0, frqBot = 0, buckets = [];
+    const sy = v => sevTop + (1 - v / yMax) * (sevBot - sevTop);
     const fullSpan = () => Math.max(MIN_SPAN, data.end - data.first);
 
     function clamp() {
@@ -178,17 +202,14 @@ export function mount(root, payload) {
 
     function schedule() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); }
 
-    // Catmull-Rom through day centres, as cubic Bézier segments from index i to j (j = i ± 1).
-    const pt = (arr, i) => {
-        const k = Math.max(0, Math.min(arr.length - 1, i));
-        return [sx(data.first + k + 0.5), sy(arr[k])];
-    };
-    function curve(arr, from, to, moveTo = true) {
+    // Catmull-Rom through day centres within one unbroken run [lo, hi], as cubic Bézier segments.
+    function curve(arr, from, to, lo, hi, moveTo = true) {
+        const pt = i => { const k = Math.max(lo, Math.min(hi, i)); return [sx(data.first + k + 0.5), sy(arr[k])]; };
         const step = to >= from ? 1 : -1;
-        const p0 = pt(arr, from);
-        let d = moveTo ? `M${p0[0].toFixed(1)},${p0[1].toFixed(1)}` : `L${p0[0].toFixed(1)},${p0[1].toFixed(1)}`;
+        const p0 = pt(from);
+        let d = `${moveTo ? 'M' : 'L'}${p0[0].toFixed(1)},${p0[1].toFixed(1)}`;
         for (let i = from; i !== to; i += step) {
-            const j = i + step, pi = pt(arr, i), pj = pt(arr, j), pk = pt(arr, i - step), pl = pt(arr, j + step);
+            const j = i + step, pi = pt(i), pj = pt(j), pk = pt(i - step), pl = pt(j + step);
             const c1 = [pi[0] + (pj[0] - pk[0]) / 6, pi[1] + (pj[1] - pk[1]) / 6];
             const c2 = [pj[0] - (pl[0] - pi[0]) / 6, pj[1] - (pl[1] - pi[1]) / 6];
             d += `C${c1[0].toFixed(1)},${c1[1].toFixed(1)} ${c2[0].toFixed(1)},${c2[1].toFixed(1)} ${pj[0].toFixed(1)},${pj[1].toFixed(1)}`;
@@ -196,30 +217,66 @@ export function mount(root, payload) {
         return d;
     }
 
+    // Index runs in [a, b] where every array has a value.
+    function runs(a, b, ...arrs) {
+        const out = [];
+        for (let i = a; i <= b; i++) {
+            if (arrs.some(x => !Number.isFinite(x[i]))) continue;
+            let j = i;
+            while (j + 1 <= b && arrs.every(x => Number.isFinite(x[j + 1]))) j++;
+            out.push([i, j]);
+            i = j;
+        }
+        return out;
+    }
+
+    // Week (Sunday-based) or month buckets covering the visible days.
+    function makeBuckets(lo, hi, weekly) {
+        const out = [];
+        let start = weekly ? lo - utc(lo).getUTCDay() : monthStart(lo);
+        while (start <= hi) {
+            const end = weekly ? start + 7 : nextMonth(start);
+            const b = { start, end, days: 0, mild: 0, mod: 0, sev: 0 };
+            for (let d = Math.max(start, data.first); d < Math.min(end, data.end); d++) {
+                const v = data.v[d - data.first];
+                b.days++;
+                if (v >= SEVERE) b.sev++; else if (v >= MODERATE) b.mod++; else if (v > 0) b.mild++;
+            }
+            out.push(b);
+            start = end;
+        }
+        return out;
+    }
+
     function render() {
         W = plot.clientWidth || 300;
         const wide = W >= 700;
-        H = Math.round(wide ? Math.max(320, Math.min(window.innerHeight - 300, 560)) : Math.max(260, Math.min(420, W * 0.95)));
+        H = Math.round(wide ? Math.max(420, Math.min(window.innerHeight - 260, 640)) : Math.max(340, Math.min(500, W * 1.15)));
         svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
         svg.setAttribute('width', W);
         svg.setAttribute('height', H);
         svg.replaceChildren();
         btns.forEach(b => b.classList.toggle('active', +b.dataset.days === activeRange));
+        modeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+        renderLegend();
+        const scatter = mode === 'scatter';
+
+        const frqH = Math.round(Math.max(72, H * 0.24));
+        sevTop = M.top; frqBot = H - M.bottom; frqTop = frqBot - frqH; sevBot = frqTop - 30;
 
         const p = ppd();
         const lo = Math.max(data.first, Math.floor(x0)), hi = Math.min(data.end - 1, Math.ceil(x1));
         const ilo = lo - data.first, ihi = hi - data.first;
 
-        // Fit the y scale to what's visible.
+        // Severity scale: fit to the worst visible day, at least 0–6.
         let top = 0;
-        for (let i = ilo; i <= ihi; i++) top = Math.max(top, data.v[i], data.f[i], data.s[i]);
-        yMax = Math.min(10, Math.max(4, Math.ceil(top)));
-        const yStep = yMax <= 5 ? 1 : 2;
-        if (yMax % yStep) yMax++;
+        for (let i = ilo; i <= ihi; i++) top = Math.max(top, data.v[i], data.f[i] || 0);
+        yMax = Math.min(10, Math.max(6, Math.ceil(top)));
+        if (yMax % 2) yMax++;
         const y0 = sy(0), yTop = sy(yMax);
 
         const grid = h('svg:g', { class: 'viz-grid' }, svg);
-        for (let v = 0; v <= yMax; v += yStep) {
+        for (let v = 0; v <= yMax; v += 2) {
             h('svg:line', { x1: M.left, x2: W - M.right, y1: sy(v), y2: sy(v), class: v === 0 ? 'base' : '' }, grid);
             h('svg:text', { x: M.left - 6, y: sy(v) + 4, 'text-anchor': 'end' }, grid, v);
         }
@@ -232,7 +289,7 @@ export function mount(root, payload) {
             const xs = sx(ms), a = Math.max(xs, M.left), b = Math.min(sx(me), W - M.right);
             const monthPx = 30.4 * p;
             if (xs >= M.left && (monthPx >= 10 || m === 0 || (monthPx >= 5 && m % 3 === 0)))
-                h('svg:line', { x1: xs, x2: xs, y1: M.top - 14, y2: y0, class: m === 0 ? 'month year' : 'month' }, grid);
+                h('svg:line', { x1: xs, x2: xs, y1: M.top - 14, y2: frqBot, class: m === 0 ? 'month year' : 'month' }, grid);
             const w = b - a;
             if (w >= 9) h('svg:text', { x: (a + b) / 2, y: M.top - 20, 'text-anchor': 'middle' }, head, w >= 34 ? MONTHS[m] : LETTERS[m]);
             if (m === 0 || ms === monthStart(lo)) years.push([Math.max(xs, M.left) + 2, t.getUTCFullYear()]);
@@ -240,7 +297,6 @@ export function mount(root, payload) {
         if (years.length > 1 && years[1][0] - years[0][0] < 46) years.shift();
         for (const [yx, label] of years) if (yx < W - 34) h('svg:text', { x: yx, y: 14, class: 'year' }, head, label);
 
-        // Day numbers when zoomed in far enough.
         if (p >= 9) {
             const step = [1, 2, 3, 5, 7].find(s => s * p >= 22) ?? 7;
             for (let d = lo; d <= hi; d++) {
@@ -251,21 +307,22 @@ export function mount(root, payload) {
 
         const defs = h('svg:defs', {}, svg);
         const cp = h('svg:clipPath', { id: clipId }, defs);
-        h('svg:rect', { x: M.left, y: yTop - 6, width: plotW(), height: y0 - yTop + 6 }, cp);
+        h('svg:rect', { x: M.left, y: 0, width: plotW(), height: H }, cp);
         const g = h('svg:g', { 'clip-path': `url(#${clipId})` }, svg);
 
-        // Band between trend and slow trend, split into runs of the same sign.
+        // ---- Panel 1: pain on migraine days ----
         const a0 = Math.max(0, ilo - 1), b0 = Math.min(data.v.length - 1, ihi + 1);
-        for (let i = a0; i < b0;) {
-            const good = data.f[i] <= data.s[i];
-            let j = i;
-            while (j < b0 && (data.f[j + 1] <= data.s[j + 1]) === good) j++;
-            const end = Math.min(j + 1, b0);
-            h('svg:path', { d: curve(data.f, i, end) + curve(data.s, end, i, false) + 'Z', class: good ? 'viz-good' : 'viz-bad' }, g);
-            i = end;
+        if (!scatter) for (const [ra, rb] of runs(a0, b0, data.f, data.s)) {
+            for (let i = ra; i < rb;) {
+                const good = data.f[i] <= data.s[i];
+                let j = i;
+                while (j < rb && (data.f[j + 1] <= data.s[j + 1]) === good) j++;
+                const end = Math.min(j + 1, rb);
+                h('svg:path', { d: curve(data.f, i, end, ra, rb) + curve(data.s, end, i, ra, rb, false) + 'Z', class: good ? 'viz-good' : 'viz-bad' }, g);
+                i = end;
+            }
         }
 
-        // Emgality shots
         let lastShotX = -Infinity;
         for (const sh of data.shots) {
             const x = sx(sh.d);
@@ -280,27 +337,37 @@ export function mount(root, payload) {
             lastShotX = x;
         }
 
-        // Stems + dots for migraine days
-        const big = p >= 3, showDots = p >= 0.8;
-        const r = p >= 10 ? 4.5 : p >= 5 ? 3.5 : big ? 2.5 : 1.6;
+        // Dots (with stems to the trend when there's room). Thin them to faint dots when zoomed far out.
+        const big = p >= 3;
+        const r = scatter ? (p >= 10 ? 4.5 : p >= 4 ? 3.5 : p >= 1.5 ? 2.5 : 1.6)
+            : p >= 10 ? 4.5 : p >= 5 ? 3.5 : big ? 2.5 : p >= 0.8 ? 1.6 : 1.2;
+        if (scatter) {
+            // Straight lines between consecutive migraine days; break after a week without one.
+            let path = '', prev = null;
+            for (let d = Math.max(data.first, lo - 8); d <= Math.min(data.end - 1, hi + 8); d++) {
+                const v = data.v[d - data.first];
+                if (!(v > 0)) continue;
+                const x = sx(d + 0.5).toFixed(1), y = sy(v).toFixed(1);
+                path += `${prev != null && d - prev <= 7 ? 'L' : 'M'}${x},${y}`;
+                prev = d;
+            }
+            h('svg:path', { d: path, class: 'viz-scatter-line' }, g);
+        }
+        const dots = h('svg:g', { class: !scatter && p < 0.8 ? 'viz-dots faint' : 'viz-dots' }, g);
         for (let d = lo; d <= hi; d++) {
             const i = d - data.first, v = data.v[i];
+            if (!(v > 0)) continue;
             const x = sx(d + 0.5);
-            if (v > 0 && showDots) {
-                if (big) h('svg:line', { x1: x, x2: x, y1: sy(v), y2: sy(data.f[i]), class: 'viz-stem' }, g);
-                h('svg:circle', { cx: x, cy: sy(v), r: d === tipDay ? r + 1.5 : r, class: big ? 'viz-dot ring' : 'viz-dot' }, g);
-            } else if (big && data.byDay.get(d)?.k === 'Sick') {
-                h('svg:circle', { cx: x, cy: y0 - 4, r: 2.5, class: 'viz-other' }, g);
-            }
+            if (!scatter && big && Number.isFinite(data.f[i])) h('svg:line', { x1: x, x2: x, y1: sy(v), y2: sy(data.f[i]), class: 'viz-stem' }, dots);
+            h('svg:circle', { cx: x, cy: sy(v), r: d === tipDay ? r + 1.5 : r, class: r >= 2.5 ? 'viz-dot ring' : 'viz-dot' }, dots);
         }
 
-        // Trend line
-        h('svg:path', { d: curve(data.f, a0, b0), class: 'viz-trend' }, g);
+        if (!scatter) for (const [ra, rb] of runs(a0, b0, data.f))
+            h('svg:path', { d: curve(data.f, ra, rb, ra, rb), class: 'viz-trend' }, g);
 
-        // Average for the visible range (dashed)
         const s = summarize(data, Math.max(data.first, Math.ceil(x0 - 0.5)), Math.min(data.end - 1, Math.floor(x1 - 0.5)));
-        if (s.days) {
-            const avg = s.sum / s.days, y = sy(avg);
+        if (s.mig) {
+            const avg = s.migSum / s.mig, y = sy(avg);
             h('svg:line', { x1: M.left, x2: W - M.right, y1: y, y2: y, class: 'viz-avg' }, svg);
             const label = `Avg ${fmt(avg)}`;
             const lw = label.length * 6.6 + 12;
@@ -309,18 +376,43 @@ export function mount(root, payload) {
             h('svg:text', { x: W - M.right - lw / 2 - 2, y: ly + 12, 'text-anchor': 'middle', class: 'viz-avg-text' }, svg, label);
         }
 
-        if (tipDay != null && tipDay >= lo && tipDay <= hi) {
-            const cx = sx(tipDay + 0.5);
-            h('svg:line', { x1: cx, x2: cx, y1: yTop, y2: y0, class: 'viz-cross' }, svg);
-            h('svg:circle', { cx, cy: sy(data.f[tipDay - data.first]), r: 4, class: 'viz-trend-dot' }, svg);
+        // ---- Panel 2: migraine days per week / month ----
+        const weekly = x1 - x0 <= 75;
+        buckets = makeBuckets(lo, hi, weekly);
+        const cap = weekly ? 7 : 31;
+        const fy = n => frqBot - (n / cap) * (frqBot - frqTop);
+        h('svg:text', { x: M.left, y: frqTop - 10, class: 'viz-panel-title' }, svg, weekly ? 'Migraine days per week' : 'Migraine days per month');
+        for (const n of weekly ? [0, 7] : [0, 15, 31]) {
+            h('svg:line', { x1: M.left, x2: W - M.right, y1: fy(n), y2: fy(n), class: n === 0 ? 'base' : '' }, grid);
+            h('svg:text', { x: M.left - 6, y: fy(n) + 4, 'text-anchor': 'end' }, grid, n);
         }
-        renderTip();
+        const gap = Math.min(2, Math.max(0.5, ((weekly ? 7 : 30) * p) * 0.08));
+        for (const b of buckets) {
+            const xa = sx(Math.max(b.start, data.first)) + gap / 2, xb = sx(Math.min(b.end, data.end)) - gap / 2;
+            if (xb - xa < 0.5) continue;
+            let yb = frqBot;
+            for (const [n, cls] of [[b.sev, 'sev'], [b.mod, 'mod'], [b.mild, 'mild']]) {
+                if (!n) continue;
+                const yt = fy(b.sev + b.mod + b.mild - (cls === 'sev' ? b.mod + b.mild : cls === 'mod' ? b.mild : 0));
+                h('svg:rect', { x: xa, y: yt, width: xb - xa, height: Math.max(0, yb - yt - (yt > fy(cap) ? 0 : 0)), class: `viz-frq ${cls}` }, g);
+                yb = yt;
+            }
+            const total = b.sev + b.mod + b.mild;
+            if (total && xb - xa >= 18) h('svg:text', { x: (xa + xb) / 2, y: fy(total) - 4, 'text-anchor': 'middle', class: 'viz-frq-label' }, g, total);
+        }
+
+        if (tipDay != null && tipDay >= lo && tipDay <= hi) {
+            const cx = sx(tipDay + 0.5), ti = tipDay - data.first;
+            h('svg:line', { x1: cx, x2: cx, y1: yTop, y2: frqBot, class: 'viz-cross' }, svg);
+            if (!scatter && Number.isFinite(data.f[ti])) h('svg:circle', { cx, cy: sy(data.f[ti]), r: 4, class: 'viz-trend-dot' }, svg);
+        }
+        renderTip(weekly);
 
         const k = `${s.days}|${Math.ceil(x0 - 0.5)}|${data.v.length}|${data.end}`;
         if (k !== statsKey) { statsKey = k; renderStats(s); }
     }
 
-    function renderTip() {
+    function renderTip(weekly) {
         if (tipDay == null || tipDay < data.first || tipDay >= data.end) { tip.hidden = true; return; }
         const info = data.byDay.get(tipDay), i = tipDay - data.first, v = data.v[i];
         tip.replaceChildren();
@@ -328,7 +420,11 @@ export function mount(root, payload) {
         h('div', { class: 'tip-date' }, tip, long(tipDay));
         for (const t of info?.t ?? []) if (t.trim()) h('div', { class: 'tip-line' }, tip, t);
         if (!info) h('div', { class: 'tip-line' }, tip, 'No entry');
-        h('div', { class: 'tip-avg' }, tip, `Trend ${fmt(data.f[i])} · 2-month ${fmt(data.s[i])}`);
+        const b = buckets.find(x => tipDay >= x.start && tipDay < x.end);
+        const parts = [];
+        if (Number.isFinite(data.f[i])) parts.push(`Pain trend ${fmt(data.f[i])}`);
+        if (b) parts.push(`${b.sev + b.mod + b.mild} of ${b.days} days this ${weekly ? 'week' : 'month'}`);
+        if (parts.length) h('div', { class: 'tip-avg' }, tip, parts.join(' · '));
         tip.hidden = false;
         const x = sx(tipDay + 0.5), tw = tip.offsetWidth;
         let left = x + 12;
