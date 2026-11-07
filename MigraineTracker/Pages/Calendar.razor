@@ -5,6 +5,7 @@
 
 <PageTitle>Calendar · Migraine Tracker</PageTitle>
 
+<div class="cal-page" @onclick="() => _selected = null">
 <div class="page-pad cal">
     <h1 class="title">Calendar</h1>
 
@@ -40,7 +41,7 @@
                                 class="cal-cell @CellClass(info) @(info?.Peak >= 6 ? "hot" : "") @(day == _today ? "today" : "") @(day == _selected ? "selected" : "")"
                                 style="@(info?.Peak is double p ? $"--p:{Heat(p)}" : null)"
                                 aria-label="@AriaLabel(day, info)"
-                                @onclick="() => Select(day)">
+                                @onclick="() => TapDay(day)" @onclick:stopPropagation="true">
                             <span class="cal-num">@n</span>
                         </button>
                     }
@@ -63,11 +64,11 @@
         <span><i class="cal-swatch empty"></i>Not logged</span>
     </div>
 </div>
+</div>
 
 @if (_selected is DateOnly sel)
 {
     var info = _byDate.GetValueOrDefault(sel);
-    <div class="sheet-backdrop" @onclick="() => _selected = null"></div>
     <section class="day-sheet" role="dialog" aria-label="@LongDate(sel)">
         <div class="day-sheet-top">
             <button type="button" class="sheet-nav" aria-label="Previous day" disabled="@(sel <= _oldest)" @onclick="() => Select(sel.AddDays(-1))">‹</button>
@@ -171,6 +172,13 @@
         { Kind: DayKind.Sick } => "sick",
         _ => "none",
     };
+
+    // Tapping another day moves straight to it; tapping the open day closes it.
+    void TapDay(DateOnly d)
+    {
+        if (d == _selected) _selected = null;
+        else Select(d);
+    }
 
     void Select(DateOnly d) => _selected = d < _oldest || d > _today ? _selected : d;
 
