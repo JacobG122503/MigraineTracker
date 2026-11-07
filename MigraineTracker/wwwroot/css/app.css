@@ -10,19 +10,18 @@
     --text: #1b1a18;
     --text-2: #5c5a55;
     --text-3: #8b8984;
-    --accent: #d9503e;
-    --accent-ink: #ffffff;
-    --pad-lo: #fbeae6;
+    --accent: var(--theme, mediumseagreen);
+    --accent-ink: #101412;
     --ok: #2f9e5b;
     --warn: #c98500;
     --bad: #d33f3f;
     /* chart */
     --series-1: #2a78d6;
-    --series-2: #eb6834;
+    --series-2: var(--accent);
     --grid: #e6e4de;
-    --good-fill: rgb(27 175 122 / .28);
-    --heat-lo: #fbe1da;
-    --heat-hi: #9e2417;
+    --good-fill: color-mix(in srgb, var(--accent) 28%, transparent);
+    --heat-lo: color-mix(in oklab, var(--accent) 16%, #fff);
+    --heat-hi: color-mix(in oklab, var(--accent) 60%, #000);
     --hot-ink: #ffffff;
     --bad-fill: rgb(227 73 72 / .24);
     --tabbar-h: 58px;
@@ -39,15 +38,12 @@
         --text: #f0efec;
         --text-2: #c3c2b7;
         --text-3: #8f8e86;
-        --accent: #e8604c;
-        --pad-lo: #2b201d;
         --series-1: #3987e5;
-        --series-2: #d95926;
         --grid: #2c2b28;
-        --good-fill: rgb(25 158 112 / .38);
-        --heat-lo: #3b2621;
-        --heat-hi: #ff7d5e;
-        --hot-ink: #1b0f0c;
+        --good-fill: color-mix(in srgb, var(--accent) 38%, transparent);
+        --heat-lo: color-mix(in oklab, var(--accent) 18%, #1c1c1a);
+        --heat-hi: color-mix(in oklab, var(--accent) 85%, #fff);
+        --hot-ink: #101412;
         --bad-fill: rgb(230 103 103 / .32);
     }
 }
@@ -61,16 +57,13 @@
     --text: #f0efec;
     --text-2: #c3c2b7;
     --text-3: #8f8e86;
-    --accent: #e8604c;
-    --pad-lo: #2b201d;
     --series-1: #3987e5;
-    --series-2: #d95926;
     --grid: #2c2b28;
-    --good-fill: rgb(25 158 112 / .38);
+    --good-fill: color-mix(in srgb, var(--accent) 38%, transparent);
     --bad-fill: rgb(230 103 103 / .32);
-    --heat-lo: #3b2621;
-    --heat-hi: #ff7d5e;
-    --hot-ink: #1b0f0c;
+    --heat-lo: color-mix(in oklab, var(--accent) 18%, #1c1c1a);
+    --heat-hi: color-mix(in oklab, var(--accent) 85%, #fff);
+    --hot-ink: #101412;
 }
 
 * { box-sizing: border-box; }
@@ -315,7 +308,7 @@ code { font-size: 14px; }
 .viz-shot-label { fill: var(--text-3); font-size: 10px; font-weight: 600; }
 .viz-avg { stroke: var(--series-2); stroke-width: 1.5; stroke-dasharray: 5 4; }
 .viz-avg-pill { fill: var(--series-2); }
-.viz-avg-text { fill: #fff; font-size: 11px; font-weight: 700; }
+.viz-avg-text { fill: var(--accent-ink); font-size: 11px; font-weight: 700; }
 .viz-cross { stroke: var(--text-2); stroke-width: 1; }
 .viz-tip {
     position: absolute; top: 50px;
@@ -353,9 +346,16 @@ code { font-size: 14px; }
 .viz-months th:first-child, .viz-months td:first-child { text-align: left; padding-left: 0; }
 .viz-months tr:last-child td { border-bottom: 0; }
 
+/* ---------- Theme picker ---------- */
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.theme-option { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); font-size: 14px; text-align: left; }
+.theme-option.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 650; }
+.theme-swatch { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%; background: var(--swatch); }
+
 /* ---------- Calendar ---------- */
 .cal { max-width: 640px; }
-.cal-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 12px; color: var(--text-2); margin-bottom: 14px; }
+.page-pad.cal { padding-bottom: 0; }
+.cal-legend { position: sticky; bottom: 0; z-index: 2; background: var(--bg); border-top: 1px solid var(--line); padding: 8px 0; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 12px; color: var(--text-2); }
 .cal-legend > span { display: inline-flex; align-items: center; gap: 5px; }
 .cal-ramp { gap: 2px !important; }
 .cal-ramp > span { margin: 0 3px; }
@@ -363,10 +363,11 @@ code { font-size: 14px; }
 .cal-swatch.none { background: var(--surface-2); }
 .cal-swatch.sick { background: repeating-linear-gradient(45deg, var(--text-3) 0 2px, var(--surface-2) 2px 4px); }
 .cal-swatch.empty { background: transparent; border: 1px dashed var(--text-3); }
-.cal-head, .cal-row { display: grid; grid-template-columns: 44px repeat(7, 1fr); gap: 4px; }
-.cal-head { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 4px 0 6px; font-size: 12px; font-weight: 600; color: var(--text-3); text-align: center; }
-.cal-grid { display: flex; flex-direction: column; gap: 4px; padding-bottom: 24px; }
-.cal-gutter { font-size: 12px; font-weight: 600; color: var(--text-2); align-self: start; padding-top: 4px; white-space: nowrap; }
+.cal-months { display: flex; flex-direction: column; gap: 22px; padding-bottom: 190px; } /* room to scroll past the day sheet */
+.cal-month-head { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 4px 0 6px; }
+.cal-month-title { margin: 0 0 8px; font-size: 18px; font-weight: 700; }
+.cal-weekdays, .cal-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-weekdays { font-size: 12px; font-weight: 600; color: var(--text-3); text-align: center; }
 .cal-cell {
     aspect-ratio: 1;
     min-width: 0;
@@ -381,10 +382,9 @@ code { font-size: 14px; }
 .cal-cell.pain.hot { color: var(--hot-ink); }
 .cal-cell.sick { background: repeating-linear-gradient(45deg, color-mix(in oklab, var(--text-3) 45%, transparent) 0 3px, var(--surface-2) 3px 7px); }
 .cal-cell.empty { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
-.cal-cell.future { background: transparent; }
-.cal-cell.first { box-shadow: inset 2px 0 0 var(--text-2); }
-.cal-cell.today { box-shadow: 0 0 0 2px var(--text); }
-.cal-cell.selected { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--series-1); z-index: 1; }
+.cal-cell.future { background: transparent; color: var(--text-3); opacity: .55; }
+.cal-cell.today { box-shadow: inset 0 0 0 2px var(--text); }
+.cal-cell.selected { box-shadow: inset 0 0 0 2px var(--series-1); }
 .cal-num { position: absolute; top: 3px; left: 5px; font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .sheet-backdrop { position: fixed; inset: 0; z-index: 20; }

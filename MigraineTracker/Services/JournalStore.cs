@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.JSInterop;
 
 namespace MigraineTracker.Services;
@@ -10,9 +12,10 @@ public enum SyncState { LocalOnly, Syncing, Synced, Pending, Error }
 /// </summary>
 public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
 {
-    const string KeyText = "mt.text", KeyDirty = "mt.dirty", KeyToken = "mt.token", KeyGist = "mt.gist", KeyLogin = "mt.login";
+    const string KeyText = "mt.text", KeyDirty = "mt.dirty", KeyToken = "mt.token", KeyGist = "mt.gist", KeyLogin = "mt.login",
+        KeyTheme = "mt.theme", KeyThemeDirty = "mt.themeDirty";
 
-    bool _initialized;
+    bool _initialized, _themeDirty;
     string? _undoText;
     CancellationTokenSource? _pushDelay;
     DotNetObjectReference<JournalStore>? _selfRef;
@@ -26,6 +29,7 @@ public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
     public string? GistId { get; private set; }
     public string? Login { get; private set; }
     public bool Dirty { get; private set; }
+    public string Theme { get; private set; } = Themes.Default;
     public bool CanUndo => _undoText is not null;
     public bool IsConnected => Token is not null && GistId is not null;
 
@@ -48,7 +52,11 @@ public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
         Token = await Get(KeyToken);
         GistId = await Get(KeyGist);
         Login = await Get(KeyLogin);
-        Sync = IsConnected ? (Dirty ? SyncState.Pending : SyncState.Synced) : SyncState.LocalOnly;
+        _themeDirty = await Get(KeyThemeDirty) == "1";
+        var savedTheme = await Get(KeyTheme);
+        if (Themes.IsValid(savedTheme)) Theme = savedTheme!;
+        else await js.InvokeVoidAsync("mtTheme.apply", Theme);
+        Sync = IsConnected ? (Dirty || _themeDirty ? SyncState.Pending : SyncState.Synced) : SyncState.LocalOnly;
         await Reparse();
         Changed?.Invoke();
 
@@ -62,7 +70,7 @@ public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
     {
         if (IsConnected)
         {
-            if (Dirty) await PushAsync();
+            if (Dirty || _themeDirty) await PushAsync();
             else await PullAsync();
         }
         // A new day may have started since the app was last opened.
@@ -109,6 +117,42 @@ public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
         SchedulePush();
     }
 
+    public async Task SetThemeAsync(string color)
+    {
+        if (color == Theme || !Themes.IsValid(color)) return;
+        await ApplyThemeAsync(color);
+        await SetThemeDirtyAsync(true);
+        if (IsConnected) Sync = SyncState.Pending;
+        Changed?.Invoke();
+        SchedulePush();
+    }
+
+    async Task ApplyThemeAsync(string color)
+    {
+        Theme = color;
+        await Set(KeyTheme, color);
+        await js.InvokeVoidAsync("mtTheme.apply", color);
+    }
+
+    async Task SetThemeDirtyAsync(bool dirty)
+    {
+        _themeDirty = dirty;
+        await Set(KeyThemeDirty, dirty ? "1" : "0");
+    }
+
+    static string SettingsJson(string theme) => new JsonObject { ["theme"] = theme }.ToJsonString();
+
+    /// <summary>The theme in a gist's settings file, or null if it's missing or not one we offer.</summary>
+    static string? ParseTheme(string? settings)
+    {
+        if (settings is null) return null;
+        try
+        {
+            return JsonNode.Parse(settings)?["theme"] is JsonValue v && v.TryGetValue<string>(out var t) && Themes.IsValid(t) ? t : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
     async Task Reparse() => Journal = JournalParser.Parse(Text, DateOnly.FromDateTime(await NowAsync()));
 
     // ---- Sync ----
@@ -131,14 +175,16 @@ public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
         try
         {
             var sent = Text;
+            var sentTheme = Theme;
             SetSync(SyncState.Syncing, null);
-            await gist.WriteAsync(Token!, GistId!, sent);
+            await gist.WriteAsync(Token!, GistId!, Dirty ? sent : null, _themeDirty ? SettingsJson(sentTheme) : null);
             if (sent == Text)
             {
                 Dirty = false;
                 await Set(KeyDirty, "0");
             }
-            SetSync(Dirty ? SyncState.Pending : SyncState.Synced, null);
+            if (sentTheme == Theme) await SetThemeDirtyAsync(false);
+            SetSync(Dirty || _themeDirty ? SyncState.Pending : SyncState.Synced, null);
         }
         catch (GistException e) { SetSync(SyncState.Error, e.Message); }
         finally { _syncLock.Release(); }
@@ -152,12 +198,14 @@ public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
         {
             SetSync(SyncState.Syncing, null);
             var remote = await gist.ReadAsync(Token!, GistId!);
-            if (!Dirty && remote != Text)
+            if (!Dirty && remote.Journal != Text)
             {
-                Text = remote;
+                Text = remote.Journal;
                 await Set(KeyText, Text);
                 await Reparse();
             }
+            if (!_themeDirty && ParseTheme(remote.Settings) is string theme && theme != Theme)
+                await ApplyThemeAsync(theme);
             SetSync(Dirty ? SyncState.Pending : SyncState.Synced, null);
         }
         catch (GistException e) { SetSync(SyncState.Error, e.Message); }
@@ -166,19 +214,19 @@ public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
 
     public async Task SyncNowAsync()
     {
-        if (Dirty) await PushAsync(); else await PullAsync();
+        if (Dirty || _themeDirty) await PushAsync(); else await PullAsync();
     }
 
     /// <summary>
-    /// Connects to GitHub. Uses the existing journal gist if there is one (its text replaces what's on
-    /// this device); otherwise creates a new secret gist from what's on this device.
+    /// Connects to GitHub. Uses the existing journal gist if there is one (its text and saved theme replace
+    /// what's on this device); otherwise creates a new secret gist from what's on this device.
     /// </summary>
     public async Task ConnectAsync(string token)
     {
         token = token.Trim();
         var login = await gist.GetLoginAsync(token);
         var id = await gist.FindAsync(token);
-        string? remote = null;
+        GistData? remote = null;
         if (id is null)
         {
             var seed = Text.Length > 0 ? Text : JournalEditor.NewJournal(DateOnly.FromDateTime(await NowAsync()));
@@ -189,8 +237,12 @@ public sealed class JournalStore(IJSRuntime js, GistClient gist) : IDisposable
 
         Token = token; GistId = id; Login = login;
         await Set(KeyToken, token); await Set(KeyGist, id); await Set(KeyLogin, login);
-        if (remote is not null) Text = remote;
+        if (remote is not null) Text = remote.Journal;
         Dirty = false;
+        // A gist with no saved theme yet takes this device's; OnResume below pushes it.
+        var remoteTheme = ParseTheme(remote?.Settings);
+        if (remoteTheme is not null) await ApplyThemeAsync(remoteTheme);
+        await SetThemeDirtyAsync(remoteTheme is null);
         _undoText = null;
         await Set(KeyText, Text); await Set(KeyDirty, "0");
         await Reparse();

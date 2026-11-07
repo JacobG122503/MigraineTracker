@@ -36,5 +36,7 @@ window.mt = {
         try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
     },
 
+    scrollToId(id) { document.getElementById(id)?.scrollIntoView({ block: 'start' }); },
+
     vibrate() { try { navigator.vibrate?.(15); } catch { } },
 };

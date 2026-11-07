@@ -12,7 +12,7 @@ Blazor WebAssembly PWA for logging migraines in a plain-text journal format:
 - **Log**: tap 1–10 to write today's line (`+ .5` and `Woke with it` modify the next tap). A second tap the same day adds `Turned X`. Missing days are filled in as blank lines (no migraine).
 - **Graph**: daily peak pain + 7-day average, Emgality markers. Pinch/drag to zoom and pan.
 - **Notes**: the raw journal, editable.
-- **Sync**: the journal is saved on the device and synced to a secret GitHub Gist (`migraine-journal.txt`) using a token with only the `gist` scope.
+- **Settings**: color theme, plus sync: the journal and theme are saved on the device and synced to a secret GitHub Gist (`migraine-journal.txt`, `migraine-settings.json`) using a token with only the `gist` scope.
 
 ## Run locally
 

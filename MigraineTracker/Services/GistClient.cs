@@ -11,10 +11,14 @@ public sealed class GistException(string message, HttpStatusCode? status = null)
     public HttpStatusCode? Status { get; } = status;
 }
 
-/// <summary>Reads and writes the journal as one file in a secret GitHub Gist.</summary>
+/// <summary>What a gist holds: the journal text, and the app settings JSON if it has been saved yet.</summary>
+public sealed record GistData(string Journal, string? Settings);
+
+/// <summary>Reads and writes the journal and app settings as two files in a secret GitHub Gist.</summary>
 public sealed class GistClient
 {
     public const string FileName = "migraine-journal.txt";
+    public const string SettingsFileName = "migraine-settings.json";
     const string Api = "https://api.github.com";
 
     readonly HttpClient _http = new();
@@ -81,27 +85,29 @@ public sealed class GistClient
         return g["id"]!.GetValue<string>();
     }
 
-    public async Task<string> ReadAsync(string token, string id)
+    public async Task<GistData> ReadAsync(string token, string id)
     {
         var g = await SendAsync(Request(HttpMethod.Get, $"{Api}/gists/{id}", token));
+        var settings = g["files"]?[SettingsFileName]?["content"]?.GetValue<string>();
         var file = g["files"]?[FileName] ?? throw new GistException($"The gist has no {FileName} file.");
         if (file["truncated"]?.GetValue<bool>() == true)
         {
             var raw = new HttpRequestMessage(HttpMethod.Get, file["raw_url"]!.GetValue<string>());
             raw.SetBrowserRequestCache(BrowserRequestCache.NoStore);
-            return await (await _http.SendAsync(raw)).Content.ReadAsStringAsync();
+            return new GistData(await (await _http.SendAsync(raw)).Content.ReadAsStringAsync(), settings);
         }
-        return file["content"]?.GetValue<string>() ?? "";
+        return new GistData(file["content"]?.GetValue<string>() ?? "", settings);
     }
 
-    public async Task WriteAsync(string token, string id, string content)
+    /// <summary>Updates whichever files are given; a null file is left as it is in the gist.</summary>
+    public async Task WriteAsync(string token, string id, string? journal, string? settings)
     {
+        var files = new JsonObject();
         // GitHub rejects empty file content, which would also delete the file.
-        if (string.IsNullOrEmpty(content)) content = " ";
-        var body = new JsonObject
-        {
-            ["files"] = new JsonObject { [FileName] = new JsonObject { ["content"] = content } },
-        };
+        if (journal is not null) files[FileName] = new JsonObject { ["content"] = journal.Length == 0 ? " " : journal };
+        if (settings is not null) files[SettingsFileName] = new JsonObject { ["content"] = settings };
+        if (files.Count == 0) return;
+        var body = new JsonObject { ["files"] = files };
         await SendAsync(Request(new HttpMethod("PATCH"), $"{Api}/gists/{id}", token, body));
     }
 }

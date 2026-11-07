@@ -1,11 +1,53 @@
 @page "/calendar"
 @implements IDisposable
 @inject JournalStore Store
+@inject IJSRuntime JS
 
 <PageTitle>Calendar · Migraine Tracker</PageTitle>
 
 <div class="page-pad cal">
     <h1 class="title">Calendar</h1>
+
+    <div class="cal-months">
+        @foreach (var month in _months)
+        {
+            var isCurrent = month.Year == _today.Year && month.Month == _today.Month;
+            <section class="cal-month" id="@(isCurrent ? CurrentMonthId : null)" aria-label="@FullMonths[month.Month - 1] @month.Year">
+                <header class="cal-month-head">
+                    <h2 class="cal-month-title">@FullMonths[month.Month - 1] @month.Year</h2>
+                    <div class="cal-weekdays" aria-hidden="true">
+                        @foreach (var d in DayNames)
+                        {
+                            <span>@d</span>
+                        }
+                    </div>
+                </header>
+                <div class="cal-days">
+                    @for (int i = 0; i < (int)month.DayOfWeek; i++)
+                    {
+                        <span></span>
+                    }
+                    @for (int n = 1; n <= DateTime.DaysInMonth(month.Year, month.Month); n++)
+                    {
+                        var day = new DateOnly(month.Year, month.Month, n);
+                        if (day > _today)
+                        {
+                            <span class="cal-cell future"><span class="cal-num">@n</span></span>
+                            continue;
+                        }
+                        _byDate.TryGetValue(day, out var info);
+                        <button type="button"
+                                class="cal-cell @CellClass(info) @(info?.Peak >= 6 ? "hot" : "") @(day == _today ? "today" : "") @(day == _selected ? "selected" : "")"
+                                style="@(info?.Peak is double p ? $"--p:{Heat(p)}" : null)"
+                                aria-label="@AriaLabel(day, info)"
+                                @onclick="() => Select(day)">
+                            <span class="cal-num">@n</span>
+                        </button>
+                    }
+                </div>
+            </section>
+        }
+    </div>
 
     <div class="cal-legend" aria-hidden="true">
         <span class="cal-ramp">
@@ -19,40 +61,6 @@
         <span><i class="cal-swatch none"></i>No migraine</span>
         <span><i class="cal-swatch sick"></i>Sick</span>
         <span><i class="cal-swatch empty"></i>Not logged</span>
-    </div>
-
-    <div class="cal-head" aria-hidden="true">
-        <span></span>
-        @foreach (var d in DayLetters)
-        {
-            <span>@d</span>
-        }
-    </div>
-
-    <div class="cal-grid" role="grid" aria-label="Pain by day, newest first">
-        @foreach (var week in _weeks)
-        {
-            <div class="cal-row" role="row">
-                <span class="cal-gutter">@week.Label</span>
-                @for (int i = 0; i < 7; i++)
-                {
-                    var day = week.Start.AddDays(i);
-                    if (day > _today)
-                    {
-                        <span class="cal-cell future"></span>
-                        continue;
-                    }
-                    _byDate.TryGetValue(day, out var info);
-                    <button type="button" role="gridcell"
-                            class="cal-cell @CellClass(info) @(info?.Peak >= 6 ? "hot" : "") @(day == _today ? "today" : "") @(day == _selected ? "selected" : "") @(day.Day == 1 ? "first" : "")"
-                            style="@(info?.Peak is double p ? $"--p:{Heat(p)}" : null)"
-                            aria-label="@AriaLabel(day, info)"
-                            @onclick="() => Select(day)">
-                        <span class="cal-num">@day.Day</span>
-                    </button>
-                }
-            </div>
-        }
     </div>
 </div>
 
@@ -94,22 +102,33 @@
 
 @code {
     sealed record DayInfo(double? Peak, double? Start, DayKind Kind, bool Woke, double? StartHour, int Meds, List<string> Lines);
-    sealed record Week(DateOnly Start, string? Label);
 
-    static readonly string[] DayLetters = ["S", "M", "T", "W", "T", "F", "S"];
+    const string CurrentMonthId = "cal-current-month";
+    static readonly string[] DayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    static readonly string[] FullMonths = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     static readonly string[] Months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     static readonly string[] Weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
     Dictionary<DateOnly, DayInfo> _byDate = new();
-    List<Week> _weeks = new();
+    List<DateOnly> _months = new();
     DateOnly _today, _oldest;
     DateOnly? _selected;
+    bool _scrollToCurrent;
 
     protected override async Task OnInitializedAsync()
     {
         _today = DateOnly.FromDateTime(await Store.NowAsync());
         Build();
+        _scrollToCurrent = true;
         Store.Changed += OnChanged;
+    }
+
+    // Oldest month is at the top, so open on the current month rather than years back.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_scrollToCurrent) return;
+        _scrollToCurrent = false;
+        await JS.InvokeVoidAsync("mt.scrollToId", CurrentMonthId);
     }
 
     void Build()
@@ -133,22 +152,11 @@
         }
 
         _oldest = _byDate.Count > 0 ? _byDate.Keys.Min() : _today;
-        _weeks = new();
-        var start = _today.AddDays(-(int)_today.DayOfWeek);                 // Sunday of this week
-        var end = _oldest.AddDays(-(int)_oldest.DayOfWeek);
-        for (var w = start; w >= end; w = w.AddDays(-7))
-        {
-            // Label the week where a month begins (and the very first row).
-            string? label = null;
-            for (int i = 0; i < 7; i++)
-            {
-                var d = w.AddDays(i);
-                if (d.Day == 1 && d <= _today)
-                    label = d.Month == 1 ? $"Jan '{d.Year % 100:00}" : Months[d.Month - 1];
-            }
-            if (w == start) label ??= Months[_today.Month - 1];
-            _weeks.Add(new Week(w, label));
-        }
+        _months = new();
+        var first = _oldest < _today ? _oldest : _today;
+        var last = new DateOnly(_today.Year, _today.Month, 1);
+        for (var m = new DateOnly(first.Year, first.Month, 1); m <= last; m = m.AddMonths(1))
+            _months.Add(m);
     }
 
     static double? Max(double? a, double? b) => a is null ? b : b is null ? a : Math.Max(a.Value, b.Value);

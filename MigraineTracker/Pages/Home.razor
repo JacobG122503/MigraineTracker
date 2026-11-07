@@ -11,27 +11,28 @@
         <div class="today-line @(TodayLine is null ? "empty" : "")">@(TodayLine ?? "Nothing logged today")</div>
     </header>
 
-    <form class="entry" @onsubmit="Rate">
+    <form class="entry" @onsubmit="Log">
         <label class="entry-label" for="pain">Pain level</label>
         <input id="pain" class="entry-input @(_invalid ? "invalid" : "")" @bind="_value" @bind:event="oninput" @bind:after="() => _invalid = false"
                inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="0" maxlength="4" />
         <div class="entry-hint @(_invalid ? "invalid" : "")">@(_invalid ? "Enter a number from 0.5 to 10" : "Enter a number from 0.5 to 10")</div>
         <button type="button" class="chip woke @(_woke ? "on" : "")" aria-pressed="@_woke" @onclick="() => _woke = !_woke">Woke with it</button>
-        <button type="submit" class="entry-log" disabled="@string.IsNullOrWhiteSpace(_value)">Log</button>
+        <button type="submit" class="entry-log" disabled="@(!CanLog)">Log</button>
     </form>
 
     <div class="extras">
-        <button type="button" class="chip" @onclick='() => Med("Ibuprofen")'>Ibuprofen</button>
-        <button type="button" class="chip" @onclick='() => Med("Tylenol")'>Tylenol</button>
-        <button type="button" class="chip" @onclick="Emgality">Emgality</button>
-        <button type="button" class="chip" @onclick="() => _noteOpen = !_noteOpen">Note</button>
+        @foreach (var med in Meds)
+        {
+            <button type="button" class="chip @(_meds.Contains(med) ? "on" : "")" aria-pressed="@_meds.Contains(med)" @onclick="() => ToggleMed(med)">@med</button>
+        }
+        <button type="button" class="chip @(_emgality ? "on" : "")" aria-pressed="@_emgality" @onclick="() => _emgality = !_emgality">Emgality</button>
+        <button type="button" class="chip @(_noteOpen ? "on" : "")" aria-pressed="@_noteOpen" @onclick="() => _noteOpen = !_noteOpen">Note</button>
     </div>
 
     @if (_noteOpen)
     {
-        <form class="note-row" @onsubmit="AddNote">
-            <input @bind="_note" placeholder="e.g. Drank last night" aria-label="Note for today" autofocus />
-            <button type="submit" class="chip on">Add</button>
+        <form class="note-row" @onsubmit="Log">
+            <input @bind="_note" @bind:event="oninput" placeholder="e.g. Drank last night" aria-label="Note for today" autofocus />
         </form>
     }
 
@@ -48,7 +49,10 @@
 </div>
 
 @code {
-    bool _woke, _invalid, _noteOpen;
+    static readonly string[] Meds = ["Ibuprofen", "Tylenol"];
+
+    readonly HashSet<string> _meds = new();
+    bool _woke, _invalid, _noteOpen, _emgality;
     string _note = "", _value = "";
     string? _toast;
     string _todayLabel = "";
@@ -67,6 +71,10 @@
         }
     }
 
+    bool HasPain => !string.IsNullOrWhiteSpace(_value);
+    bool HasNote => _noteOpen && !string.IsNullOrWhiteSpace(_note);
+    bool CanLog => HasPain || HasNote || _emgality || _meds.Count > 0;
+
     protected override async Task OnInitializedAsync()
     {
         Store.Changed += OnChanged;
@@ -80,43 +88,49 @@
         _todayLabel = $"{Weekdays[(int)now.DayOfWeek]}, {Months[now.Month - 1]} {now.Day}";
     }
 
-    async Task Rate()
+    void ToggleMed(string med)
     {
-        var text = _value.Trim().Replace(',', '.');
-        if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v)
-            || v <= 0 || v > 10)
+        if (!_meds.Remove(med)) _meds.Add(med);
+    }
+
+    // Writes everything selected as one edit, so one Undo takes it all back.
+    async Task Log()
+    {
+        if (!CanLog) return;
+
+        double? pain = null;
+        if (HasPain)
         {
-            _invalid = true;
-            return;
+            var text = _value.Trim().Replace(',', '.');
+            if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v)
+                || v <= 0 || v > 10)
+            {
+                _invalid = true;
+                return;
+            }
+            pain = Math.Round(v, 1);
         }
-        v = Math.Round(v, 1);
-        bool woke = _woke;
-        await Store.ApplyAsync((t, now) => JournalEditor.AddRating(t, now, v, woke));
-        _value = "";
-        _woke = _invalid = false;
-        await Done();
-    }
 
-    async Task Med(string name)
-    {
-        await Store.ApplyAsync((t, now) => JournalEditor.AddMed(t, now, name));
-        await Done();
-    }
+        bool woke = _woke, emgality = _emgality, onlyEmgality = emgality && pain is null && _meds.Count == 0 && !HasNote;
+        var meds = Meds.Where(_meds.Contains).ToList();
+        var note = HasNote ? _note : null;
 
-    async Task Emgality()
-    {
-        await Store.ApplyAsync(JournalEditor.AddEmgality);
-        var n = JournalParser.LastEmgalityNumber(Store.Journal);
-        await Done($"Added (Emgality {n})");
-    }
+        await Store.ApplyAsync((t, now) =>
+        {
+            if (pain is double p) t = JournalEditor.AddRating(t, now, p, woke);
+            foreach (var med in meds) t = JournalEditor.AddMed(t, now, med);
+            if (note is not null) t = JournalEditor.AddNote(t, now, note);
+            if (emgality) t = JournalEditor.AddEmgality(t, now);
+            return t;
+        });
 
-    async Task AddNote()
-    {
-        var note = _note;
-        await Store.ApplyAsync((t, now) => JournalEditor.AddNote(t, now, note));
-        _note = "";
-        _noteOpen = false;
-        await Done();
+        _value = _note = "";
+        _meds.Clear();
+        _woke = _invalid = _noteOpen = _emgality = false;
+
+        await RefreshToday();
+        var shot = emgality ? $"Emgality {JournalParser.LastEmgalityNumber(Store.Journal)}" : null;
+        await Done(onlyEmgality ? $"Added ({shot})" : shot is not null ? $"Saved: {TodayLine} ({shot})" : null);
     }
 
     async Task Undo()

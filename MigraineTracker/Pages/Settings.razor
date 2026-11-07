@@ -3,10 +3,26 @@
 @inject JournalStore Store
 @inject IJSRuntime JS
 
-<PageTitle>Sync · Migraine Tracker</PageTitle>
+<PageTitle>Settings · Migraine Tracker</PageTitle>
 
 <div class="page-pad settings">
-    <h1 class="title">Sync &amp; backup</h1>
+    <h1 class="title">Settings</h1>
+
+    <section class="card">
+        <h2>Color theme</h2>
+        <div class="theme-grid" role="radiogroup" aria-label="Color theme">
+            @foreach (var t in Themes.All)
+            {
+                <button type="button" role="radio" aria-checked="@(t.Color == Store.Theme ? "true" : "false")"
+                        class="theme-option @(t.Color == Store.Theme ? "on" : "")" style="--swatch:@t.Color"
+                        @onclick="() => Store.SetThemeAsync(t.Color)">
+                    <i class="theme-swatch"></i>
+                    <span>@t.Name</span>
+                </button>
+            }
+        </div>
+        <p class="muted">@(Store.IsConnected ? "Saved on this device and in your gist, so it follows you to your other devices." : "Saved on this device. Connect cloud sync below to keep it across devices.")</p>
+    </section>
 
     <section class="card">
         <h2>Cloud sync</h2>
